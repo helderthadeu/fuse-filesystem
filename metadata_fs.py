@@ -26,7 +26,7 @@ class MetadataFS(Operations):
         files (dict): Stores file metadata like size, timestamps, and permissions.
         data (dict): Stores the actual file contents as bytes.
         xattrs (dict): Stores extended attributes for each file and directory.
-        fd (int): File descriptor counter used during file creation.
+        fd (int): File descriptor counter used during file creation and opening.
     """
 
     def __init__(self):
@@ -59,28 +59,33 @@ class MetadataFS(Operations):
             'user.tags': b'sample,python',
             'user.classification': b'important'
         }
+        logging.info("Filesystem initialized in memory.")
 
     # --- Standard Virtual Filesystem Methods ---
 
     def getattr(self, path, fh=None):
         """Retrieve metadata for a given path."""
+        logging.info('getattr(path=%s)', path)
         if path not in self.files:
             raise FuseOSError(errno.ENOENT)
         return self.files[path]
 
     def readdir(self, path, fh):
         """Return a list of files in the directory."""
+        logging.info('readdir(path=%s)', path)
         return ['.', '..'] + [x[1:] for x in self.files if x != '/']
 
     def read(self, path, size, offset, fh):
         """Read a slice of file data from the given offset."""
+        logging.info('read(path=%s, size=%d, offset=%d)', path, size, offset)
         return self.data[path][offset:offset + size]
 
     def create(self, path, mode):
         """Create a new empty file with the specified mode."""
+        logging.info('create(path=%s, mode=%o)', path, mode)
         self.files[path] = dict(st_mode=(S_IFREG | mode), st_nlink=1,
-                                st_size=0, st_ctime=time(), st_mtime=time(),
-                                st_atime=time())
+                                 st_size=0, st_ctime=time(), st_mtime=time(),
+                                 st_atime=time())
         self.data[path] = b''
         self.xattrs[path] = {}  # Initialize xattrs for new file
         self.fd += 1
@@ -88,33 +93,52 @@ class MetadataFS(Operations):
 
     def unlink(self, path):
         """Remove a file and its associated data and xattrs."""
+        logging.info('unlink(path=%s)', path)
         self.files.pop(path)
         self.data.pop(path)
         self.xattrs.pop(path)
-        logging.info("File deleted successfully: (path=%s)" % path)
+
+    def open(self, path, flags):
+        """Called when a file is opened."""
+        logging.info('open(path=%s, flags=%s)', path, flags)
+        self.fd += 1
+        return self.fd
+
+    def truncate(self, path, length, fh=None):
+        """Called to change the size of a file."""
+        logging.info('truncate(path=%s, length=%d)', path, length)
+        # Make the file content the desired length
+        self.data[path] = self.data[path][:length]
+        # Update the file size attribute
+        self.files[path]['st_size'] = length
+
+    def write(self, path, data, offset, fh):
+        """Called to write data to a file."""
+        logging.info('write(path=%s, offset=%d, bytes=%d)', path, offset, len(data))
+        # Insert new data at the correct offset
+        self.data[path] = self.data[path][:offset] + data
+        # Update the file size attribute
+        self.files[path]['st_size'] = len(self.data[path])
+        # Return the number of bytes written
+        return len(data)
 
     # --- Extended Attributes (xattr) Support ---
 
     def getxattr(self, path, name, position=0):
-        """
-        Retrieve the value of an extended attribute for the given path.
-        Raises ENODATA if the attribute doesn't exist.
-        """
+        """Retrieve the value of an extended attribute for the given path."""
+        logging.info('getxattr(path=%s, name=%s)', path, name)
         if path not in self.xattrs:
             raise FuseOSError(errno.ENOATTR)
 
         attrs = self.xattrs.get(path, {})
-
         try:
             return attrs[name]
         except KeyError:
             raise FuseOSError(ENODATA)
 
     def setxattr(self, path, name, value, options, position=0):
-        """
-        Set or update an extended attribute for the given path.
-        The value must be a bytes object.
-        """
+        """Set or update an extended attribute for the given path."""
+        logging.info('setxattr(path=%s, name=%s)', path, name)
         if path not in self.xattrs:
             raise FuseOSError(errno.ENOATTR)
 
@@ -122,10 +146,8 @@ class MetadataFS(Operations):
         attrs[name] = value
 
     def listxattr(self, path):
-        """
-        List all extended attribute names for the given path.
-        Returns a list of attribute names.
-        """
+        """List all extended attribute names for the given path."""
+        logging.info('listxattr(path=%s)', path)
         if path not in self.xattrs:
             raise FuseOSError(errno.ENOATTR)
 
@@ -133,10 +155,8 @@ class MetadataFS(Operations):
         return list(attrs.keys())
 
     def removexattr(self, path, name):
-        """
-        Remove a specific extended attribute from the given path.
-        Raises ENODATA if the attribute does not exist.
-        """
+        """Remove a specific extended attribute from the given path."""
+        logging.info('removexattr(path=%s, name=%s)', path, name)
         if path not in self.xattrs:
             raise FuseOSError(errno.ENOATTR)
 
@@ -149,13 +169,15 @@ class MetadataFS(Operations):
 
 if __name__ == '__main__':
     # Parse mount point argument
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="An in-memory filesystem with extended attribute support using FUSE.")
     parser.add_argument('mount', help='Mount point for the filesystem')
     args = parser.parse_args()
 
     # Enable logging
     logging.basicConfig(level=logging.INFO)
-    print("File system created!")
+    logging.info("Starting FUSE filesystem...")
     
     # Launch the FUSE filesystem
     fuse = FUSE(MetadataFS(), args.mount, foreground=True)
+
